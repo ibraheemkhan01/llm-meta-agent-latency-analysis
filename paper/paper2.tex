@@ -346,6 +346,21 @@ The scaling results (Experiments 2 and 3) suggest a practical design principle:
 
 
 % ─────────────────────────────────────────────────────────────────────────────
+\section{Future Work}
+
+Three extensions would meaningfully strengthen the contributions of this paper.
+
+\textbf{1. Multi-provider latency comparison.}
+All results here use GPT-4o-mini via the OpenAI API. Latency distributions, token costs, and per-call variance differ substantially across providers (Anthropic Claude Haiku, Google Gemini Flash, local Ollama models) and model sizes. A controlled comparison using the same prompt and decision logic across providers would establish whether the 99.8\% LLM dominance result is a property of the architecture or an artifact of a specific provider's infrastructure. It would also identify whether a smaller or locally-hosted model could reduce per-call latency enough to support higher decision cadences without proportional quality loss.
+
+\textbf{2. Longer-horizon experiment on hourly bars.}
+The 45-day intraday window is sufficient for proof of concept but covers a single market regime and is vulnerable to regime-specific criticism. Running the same experiments on 1-hour bars over a 1--2 year window would (a) increase the number of decision cycles from $\sim$78 to $\sim$1,000+, providing stronger statistical power for the latency distribution analysis; (b) test whether the action-selectivity advantage holds across bull, bear, and choppy regimes; and (c) allow annualized return comparisons that are more interpretable than the 45-day extrapolations used here. The hourly cadence also places LLM inference latency ($\sim$6 seconds) well within the decision window, removing any real-time feasibility concern.
+
+\textbf{3. Latency--quality tradeoff under prompt optimization.}
+This paper measures overhead for a fixed prompt design. A natural extension is to test whether the overhead can be reduced without proportional quality loss through: (a) \textit{prompt compression} --- reducing token count by truncating agent ideas from 10 to 3--5 per agent; (b) \textit{model downsizing} --- replacing GPT-4o-mini with a smaller model (e.g., GPT-4o-nano or a 7B local model); and (c) \textit{response caching} --- reusing the previous cycle's LLM decision when market conditions have not changed beyond a threshold. Each intervention would produce a (latency, return) pair, enabling a Pareto frontier analysis of the compute--quality tradeoff. This would make the overhead characterization actionable: rather than simply reporting that the LLM dominates 99.8\% of cycle time, one could identify the minimum viable LLM call budget for a target decision quality level.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
 
 We presented the first per-stage latency decomposition of an LLM-orchestrated multi-agent decision system under realistic transaction costs. The central finding is stark: the LLM call accounts for 99.8\% of per-cycle latency in the Orchestrator (8,617 ms out of 8,633 ms), with feature computation (156 ms) and agent calls (15 ms) contributing negligibly. Feature computation is the only stage that scales with universe size; LLM cost scales sub-linearly due to prompt summarization; agent call time is effectively constant.
