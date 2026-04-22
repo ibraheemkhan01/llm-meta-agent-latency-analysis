@@ -1,0 +1,4 @@
+agent,nav,return_pct,ann_return,trades,expectancy,t_feature_mean,t_agent_mean,t_prompt_mean,t_llm_mean,t_parse_mean,t_total_mean,t_feature_p95,t_agent_p95,t_llm_p95,t_total_p95,prompt_tokens,completion_tokens,llm_cost_usd,llm_calls,n_agents
+Orchestrator (1 agent),99832.39,-0.1676,-1.4079,133,-0.76,141.1,11.18,0.29,4099.33,0.03,4110.83,177.06,26.07,6403.7,6424.24,1033.2,250.6,0.015268,50,1
+Orchestrator (2 agents),99467.53,-0.5325,-4.4727,139,-3.4,142.49,12.91,0.27,4423.36,0.03,4436.57,182.08,28.74,8400.71,8413.04,1176.6,292.5,0.017601,50,2
+Orchestrator (3 agents),99601.79,-0.3982,-3.345,156,-2.03,143.43,13.51,0.28,4937.04,0.03,4950.87,185.38,31.35,7415.09,7433.73,1302.8,327.0,0.019581,50,3

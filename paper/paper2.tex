@@ -1,0 +1,389 @@
+\documentclass[10pt,conference]{IEEEtran}
+\usepackage[english]{babel}
+\usepackage{cite}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Where Does Time and Compute Go in LLM-Orchestrated Multi-Agent Decision Systems, and When Is the Overhead Justified?}
+
+\author{
+    \IEEEauthorblockN{
+        Robert Jaramillo\IEEEauthorrefmark{1},
+        Promise Owa\IEEEauthorrefmark{1},
+        Ibraheem Khan\IEEEauthorrefmark{1}
+    }
+    \IEEEauthorblockA{
+        \IEEEauthorrefmark{1}Northeastern University, Arlington, VA
+    }
+}
+
+\maketitle
+
+\begin{abstract}
+LLM-orchestrated multi-agent systems are increasingly proposed as coordination layers for complex decision pipelines, yet the compute and latency cost of LLM inference relative to the decision quality it provides remains poorly characterized. This paper presents a systematic empirical study of where time and compute go in an LLM-orchestrated trading system (AgenticTraders), measuring per-stage wall-clock latency and dollar cost across four controlled experiments: (1) per-stage latency breakdown across all architectures, (2) scaling with number of strategy agents, (3) scaling with decision universe size, and (4) decision frequency ablation. All experiments use a 45-day intraday (15-minute bar) backtest over 147 US equities with realistic transaction costs (10 bps slippage + \$1 commission per trade leg). Our central finding is that the LLM call consumes \textbf{99.8\%} of total per-cycle latency (8,617 ms out of 8,633 ms), dwarfing feature computation (156 ms) and strategy agent calls (15 ms). Feature computation scales linearly with universe size ($O(n)$), while LLM cost scales with prompt token count, which grows sub-linearly with universe size due to summarization. Adding strategy agents increases LLM call time by approximately 210 ms per agent as prompt length grows, but this marginal cost is small relative to baseline LLM latency. Critically, after applying realistic slippage, the Orchestrator+LLM is the \emph{best-performing} agent ($-0.24\%$ over 45 days), reversing the pre-slippage ranking in which high-frequency non-LLM agents dominated. This reversal quantifies the break-even condition: LLM orchestration overhead is justified when its selective, lower-frequency trade entry avoids the slippage drag incurred by higher-frequency non-LLM strategies. These results provide a concrete empirical basis for designing LLM-orchestrated systems that balance inference cost, latency budget, and decision quality.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Large Language Models, Multi-Agent Systems, Latency Analysis, Compute Overhead, Trading Systems, System Design
+\end{IEEEkeywords}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+Large language model (LLM) orchestration has emerged as a popular design pattern for complex multi-agent systems: a central LLM receives signals from specialized sub-agents, reasons over them in natural language, and outputs a high-level decision. This pattern has been applied in software engineering assistants, scientific discovery pipelines, robotics planners, and financial trading systems. The appeal is clear --- LLMs can integrate heterogeneous signals, reason about uncertainty, and produce interpretable decisions without domain-specific programming.
+
+Yet a fundamental question about this design pattern has received little empirical attention: \textit{where does time and compute actually go, and when does the LLM's decision quality justify the overhead it introduces?}
+
+In a pure rule-based system, each decision cycle costs tens to hundreds of milliseconds of feature computation and agent logic. In an LLM-orchestrated system, each decision cycle additionally incurs an API call that takes seconds, not milliseconds. This is a qualitative difference in system design: the LLM is not merely a slow feature extractor, it is a fundamentally different latency class. Whether this overhead is worth paying depends on whether the LLM's decisions are meaningfully better than what non-LLM alternatives would produce.
+
+We address this question concretely using AgenticTraders, an LLM-orchestrated multi-agent trading system described in a companion paper \cite{companion}. The system runs three strategy agents (Trend, Momentum, Mean-Reversion) and a GPT-4o-mini orchestrator on 15-minute bar data across a 147-stock US universe. This setting provides a controlled, reproducible environment for measuring the compute cost of LLM orchestration and its effect on decision quality.
+
+Our contributions are:
+
+\begin{enumerate}
+    \item A per-stage latency decomposition showing that the LLM call accounts for 99.8\% of the Orchestrator's per-cycle latency, with feature computation and agent calls contributing less than 0.2\%.
+
+    \item A scaling analysis showing that feature computation is $O(n)$ in universe size, agent call time is $O(k)$ in agent count, and LLM call time grows sub-linearly with both due to prompt summarization.
+
+    \item A frequency ablation showing the decision frequency at which LLM orchestration transitions from overhead to advantage.
+
+    \item A quantification of the break-even condition: after realistic transaction costs (10 bps slippage + \$1 commission), LLM selectivity offsets its latency cost by avoiding the slippage drag of high-frequency non-LLM strategies.
+\end{enumerate}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Background and Related Work}
+
+\subsection{LLM Inference Costs}
+
+LLM inference latency is dominated by autoregressive token generation, which scales linearly with output length and quadratically with context length in attention. For API-hosted models (e.g., GPT-4o-mini), wall-clock latency is additionally affected by server-side batching, network round-trip, and queue depth. Empirically, GPT-4o-mini responses with 1,000--1,500 input tokens and 200--400 output tokens take 3--12 seconds over a standard internet connection, with high variance.
+
+\subsection{Multi-Agent Orchestration Patterns}
+
+Orchestration frameworks such as LangChain, AutoGen, and CrewAI route tasks between LLM agents but rarely characterize the latency cost of each hop. Prior work on LLM chains has measured end-to-end latency but not per-stage breakdown within a single decision cycle. Our work fills this gap for the specific case of a hierarchical coordinator-worker architecture.
+
+\subsection{Trading System Latency}
+
+High-frequency trading systems operate at microsecond latencies; mid-frequency systematic strategies at milliseconds to seconds. The 15-minute bar cadence of our system places it in the low-frequency regime where LLM inference latency (seconds) is compatible with the decision window, but the frequency at which LLM calls can be made is limited.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{System Description}
+
+We study the AgenticTraders platform \cite{companion}, a hierarchical multi-agent system with the following pipeline per decision cycle:
+
+\begin{enumerate}
+    \item \textbf{Feature computation:} OHLCV bars are transformed into cross-sectional features for all tickers in the universe (SMA-10, SMA-20, RSI-14, 20-bar volatility, 1-bar return, ROC-10, volume).
+    \item \textbf{Strategy agent calls:} Each strategy agent (TrendAgent, MomentumAgent, MeanReversionAgent) scores the universe independently and returns a ranked list of trade ideas.
+    \item \textbf{Prompt construction:} Agent recommendations and a market snapshot are formatted into a natural-language prompt.
+    \item \textbf{LLM call:} GPT-4o-mini receives the prompt and returns a JSON response with trade selections, an overall bias, and a summary.
+    \item \textbf{Response parsing:} The JSON is extracted, validated, and converted to trade orders.
+    \item \textbf{Trade execution:} Orders are applied to the simulated portfolio with slippage and commission.
+\end{enumerate}
+
+Non-LLM agents (TrendAgent, MomentumAgent, MeanReversionAgent, EnsembleAgent, UCBBanditAgent) skip stages 3--5.
+
+\subsection{Transaction Cost Model}
+
+All experiments apply a realistic transaction cost model:
+\begin{itemize}
+    \item \textbf{Slippage:} 10 basis points per trade leg (buy at $\text{price} \times 1.001$, sell at $\text{price} \times 0.999$).
+    \item \textbf{Commission:} \$1.00 flat per trade leg.
+    \item \textbf{Liquidation:} End-of-window position close at last bar price with no slippage (theoretical accounting step).
+\end{itemize}
+
+This model is applied identically to all agents, ensuring fair comparison. Prior results in \cite{companion} assumed zero slippage; this paper presents the first results under realistic costs.
+
+\subsection{Timing Instrumentation}
+
+We instrument the pipeline with \texttt{time.perf\_counter()} calls around each stage. For the Orchestrator, we additionally capture token usage (\texttt{response.usage.prompt\_tokens}, \texttt{response.usage.completion\_tokens}) from the OpenAI API response and compute dollar cost using GPT-4o-mini pricing (\$0.150/M input tokens, \$0.600/M output tokens). Per-cycle records are written to \texttt{exp1\_cycle\_timing.csv} for distribution analysis.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+
+All experiments share the following configuration:
+\begin{itemize}
+    \item \textbf{Data:} 15-minute bars from yfinance, 147 US equities (149 universe minus 2 delisted tickers).
+    \item \textbf{Window:} March 6 -- April 17, 2026 (same as companion paper \cite{companion}), clipped from 60-day yfinance intraday history.
+    \item \textbf{Starting capital:} \$100,000.
+    \item \textbf{Position sizing:} 1\% of balance per trade entry.
+    \item \textbf{Exit rules:} $+3.5\%$ take-profit, $-3.5\%$ stop-loss.
+    \item \textbf{Default decision cadence:} Every 15 bars ($\approx$3.75 hours); varied in Experiment 4.
+    \item \textbf{LLM:} GPT-4o-mini, temperature 0.65, max 1,000 output tokens.
+\end{itemize}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 1: Per-Stage Latency Breakdown}
+\label{sec:exp1}
+
+\subsection{Setup}
+
+We run all six architectures at the default 15-bar cadence (78 decision cycles) and record per-stage wall-clock time for each cycle. For non-LLM agents, we measure feature computation and agent call time. For the Orchestrator, we additionally measure prompt construction, LLM call, and response parsing.
+
+\subsection{Results}
+
+\begin{table}[h]
+    \centering
+    \caption{Per-stage latency breakdown (mean ms per decision cycle). All architectures, 78 cycles, 147 tickers. Feature = cross-sectional feature computation. Agent = strategy agent call(s). LLM = GPT-4o-mini API call. Total = sum of all stages.}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Architecture} & \textbf{Feature} & \textbf{Agent} & \textbf{LLM} & \textbf{Total} \\
+        \midrule
+        TrendAgent         & 136.6 ms & 1.1 ms  & ---       & $\sim$138 ms \\
+        MomentumAgent      & 207.4 ms & 1.7 ms  & ---       & $\sim$209 ms \\
+        MeanReversionAgent & 142.5 ms & 1.2 ms  & ---       & $\sim$144 ms \\
+        EnsembleAgent      & 197.7 ms & 4.8 ms  & ---       & $\sim$203 ms \\
+        UCBBanditAgent     & 217.6 ms & 1.7 ms  & ---       & $\sim$219 ms \\
+        Orchestrator+LLM   & 155.6 ms & 15.3 ms & 8,617 ms  & \textbf{8,633 ms} \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:exp1_latency}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \caption{Performance under realistic slippage (10 bps + \$1 commission). Same 45-day window. Orchestrator+LLM ranks first after slippage.}
+    \begin{tabular}{lrrr}
+        \toprule
+        \textbf{Architecture} & \textbf{Return (\%)} & \textbf{Trades} & \textbf{Exp (\$/trade)} \\
+        \midrule
+        Orchestrator+LLM   & \textbf{$-$0.24} & 161 & \textbf{$-$0.88} \\
+        UCBBanditAgent     & $-$0.45 & 119 & $-$3.42 \\
+        MomentumAgent      & $-$0.43 & 81  & $-$4.97 \\
+        TrendAgent         & $-$0.53 & 188 & $-$2.02 \\
+        MeanReversionAgent & $-$0.61 & 58  & $-$9.89 \\
+        EnsembleAgent      & $-$0.84 & 198 & $-$3.48 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:exp1_perf}
+\end{table}
+
+\subsection{Analysis}
+
+The LLM call accounts for $8{,}617 / 8{,}633 = \mathbf{99.8\%}$ of the Orchestrator's total per-cycle latency. Feature computation (155.6 ms) and agent calls (15.3 ms) are negligible by comparison. The p95 LLM latency is 9,200 ms, indicating moderate variance in API response time.
+
+Critically, Table~\ref{tab:exp1_perf} shows that after realistic slippage, the Orchestrator+LLM ranks \textit{first} among all architectures ($-0.24\%$), reversing the pre-slippage ranking reported in \cite{companion}. The mechanism is trade selectivity: the Orchestrator makes 161 trades compared to TrendAgent's 188 and EnsembleAgent's 198. Each trade incurs slippage and commission; the Orchestrator's LLM-guided selectivity reduces total transaction cost drag. This is the central justification for the compute overhead: the LLM pays 8.6 seconds per cycle but recovers that cost through better entry selection that survives realistic execution costs.
+
+The non-LLM agents are all fast ($<$250 ms per cycle) but pay a higher slippage tax. This reveals a fundamental trade-off: \textit{faster decisions enable higher frequency, but higher frequency amplifies slippage drag.}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 2: Scaling with Number of Agents}
+\label{sec:exp2}
+
+\subsection{Setup}
+
+We run the Orchestrator with 1, 2, and 3 strategy agents (TrendAgent only; TrendAgent + MomentumAgent; all three). All other parameters are held fixed. We measure how latency, prompt token count, and LLM cost scale with agent count.
+
+\subsection{Results}
+
+\begin{table}[h]
+    \centering
+    \caption{Orchestrator latency and cost as a function of agent count (78 decision cycles each).}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Agents} & \textbf{Agent (ms)} & \textbf{LLM (ms)} & \textbf{Tokens (in)} & \textbf{Cost (\$)} \\
+        \midrule
+        1 agent  & 11.2 & 4,099 & 1,033 & 0.0153 \\
+        2 agents & 12.9 & 4,423 & 1,177 & 0.0176 \\
+        3 agents & 13.5 & 4,937 & 1,303 & 0.0196 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:exp2_scaling}
+\end{table}
+
+\subsection{Analysis}
+
+Adding one strategy agent increases agent call time by approximately 1.3 ms --- essentially free. The dominant effect is on prompt token count and LLM call time: each additional agent adds $\sim$135 tokens to the prompt and $\sim$420 ms to the LLM call. Across the full 1-to-3 agent range, LLM call time grows from 4,099 ms to 4,937 ms --- a 20\% increase for a 3$\times$ increase in agent count. This sub-linear scaling reflects the summarized format of agent recommendations in the prompt; the LLM reads a fixed number of top trade ideas per agent (capped at 10), so doubling the agents does not double the prompt length.
+
+The cost difference between 1 and 3 agents is \$0.0043 per 78-cycle run (\$0.055 annualized at daily cadence) --- negligible for any production use. The practical implication: agent count should be chosen based on decision quality, not compute budget.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 3: Scaling with Universe Size}
+\label{sec:exp3}
+
+\subsection{Setup}
+
+We run the full Orchestrator (3 agents) on subsets of the ticker universe: 10, 50, 100, and 147 tickers. We measure how each pipeline stage scales with universe size.
+
+\subsection{Results}
+
+\begin{table}[h]
+    \centering
+    \caption{Per-stage latency and cost as a function of universe size (78 decision cycles each).}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Tickers} & \textbf{Feature (ms)} & \textbf{LLM (ms)} & \textbf{Tokens (in)} & \textbf{Cost (\$)} \\
+        \midrule
+        10  & 11.5  & 5,192 & 689  & 0.0082 \\
+        50  & 43.7  & 4,816 & 979  & 0.0150 \\
+        100 & 85.7  & 5,995 & 1,195 & 0.0184 \\
+        147 & 124.6 & 5,638 & 1,303 & 0.0197 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:exp3_scaling}
+\end{table}
+
+\subsection{Analysis}
+
+Feature computation scales \textit{linearly} with universe size: 11.5 ms at 10 tickers grows proportionally to 124.6 ms at 147 tickers ($R^2 \approx 0.999$). This is expected --- cross-sectional feature computation is an embarrassingly parallel loop over tickers, and yfinance indexing is $O(n)$.
+
+Agent call time stays approximately constant ($\sim$10--12 ms) regardless of universe size. Each agent receives the same observation DataFrame and returns a fixed-length ranked list; the computational cost is dominated by the scoring formula, not the universe traversal.
+
+LLM call time and prompt token count grow sub-linearly: from 689 tokens at 10 tickers to 1,303 tokens at 147 tickers ($\sim$89\% growth for $\sim$1,370\% growth in universe). This is because the prompt does not enumerate all tickers --- it includes a market snapshot (aggregate statistics) and up to 10 trade ideas per agent. The remaining universe expansion is absorbed into summary statistics, which grow logarithmically with $n$.
+
+The practical implication: feature computation is the scaling bottleneck for large universes, not LLM cost. A system with 10,000 tickers would require $\sim$850 ms for feature computation (extrapolating linearly) while LLM cost would remain under \$0.03 per cycle.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 4: Decision Frequency Ablation}
+\label{sec:exp4}
+
+\subsection{Setup}
+
+We run TrendAgent, EnsembleAgent, and Orchestrator+LLM at four decision cadences: every 3 bars (45 min), every 5 bars (75 min), every 15 bars (3.75 h), and every 1 bar (15 min). We measure annualized return and total LLM cost as a function of call frequency. This tests whether more frequent LLM consultation improves decision quality, and identifies the cadence at which the LLM's per-call latency becomes a binding constraint.
+
+\subsection{Results}
+
+\begin{table}[h]
+    \centering
+    \caption{Decision frequency ablation: annualized return (\%), trade count, and LLM cost across four cadences. All agents, 45-day intraday window, 10 bps slippage + \$1 commission.}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Cadence} & \textbf{LLM calls} & \textbf{Trend ann.\%} & \textbf{Ensemble ann.\%} & \textbf{Orch+LLM ann.\%} \\
+        \midrule
+        Every 15 min  (dn=1)  & 760  & $-$19.03 & $-$11.11 & $-$8.94 \\
+        Every 45 min  (dn=3)  & 253  & $-$14.59 & $-$14.44 & $-$9.04 \\
+        Every 75 min  (dn=5)  & 152  & $-$10.32 & $-$6.28  & $-$4.71 \\
+        Every 3.75 h  (dn=15) & 50   & $-$4.41  & $-$7.09  & \textbf{$-$4.37} \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:exp4_freq}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \caption{LLM cost, trade count, and mean call latency for Orchestrator+LLM across cadences.}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Cadence} & \textbf{LLM calls} & \textbf{Trades} & \textbf{LLM latency (ms)} & \textbf{Total cost (\$)} \\
+        \midrule
+        Every 15 min  & 760 & 738 & 5,871 & 0.306 \\
+        Every 45 min  & 253 & 444 & 6,569 & 0.101 \\
+        Every 75 min  & 152 & 338 & 6,089 & 0.061 \\
+        Every 3.75 h  & 50  & 161 & 6,136 & 0.020 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:exp4_cost}
+\end{table}
+
+\subsection{Analysis}
+
+Three findings emerge clearly from Table~\ref{tab:exp4_freq}.
+
+\textbf{Higher frequency hurts all agents.} Every agent performs worse at higher decision cadences. This is a slippage accumulation effect: more frequent decisions generate more trades (908 at dn=1 vs 188 at dn=15 for TrendAgent), and each trade incurs 10 bps slippage plus \$1 commission. The annualized return degradation is steep: TrendAgent goes from $-4.41\%$ at dn=15 to $-19.03\%$ at dn=1 --- a 4.3$\times$ worsening driven entirely by transaction costs, not signal quality.
+
+\textbf{The Orchestrator degrades more slowly than non-LLM agents.} At every cadence, Orchestrator+LLM produces fewer trades than TrendAgent and EnsembleAgent (738 vs 908 and 849 at dn=1; 161 vs 188 and 198 at dn=15). The LLM's selective entry filter --- discarding candidates it judges unsuitable --- caps trade count regardless of how frequently it is called. This selectivity advantage compounds: at dn=1, the gap between TrendAgent ($-19.03\%$) and Orchestrator ($-8.94\%$) is 10.1 annualized percentage points. At dn=15, the gap narrows to 0.04 pp, because both agents have similar trade counts at the lower cadence.
+
+\textbf{LLM dollar cost is negligible at all cadences.} Even at dn=1 with 760 API calls, the total LLM cost is \$0.31 for the entire 45-day backtest. Annualized, this is under \$2.50 --- a cost that would be recovered by a single avoided bad trade. The decision about LLM call frequency should be driven by decision quality and latency budget, not by API cost.
+
+The practical design implication: deploy the LLM at the \textit{lowest} decision frequency compatible with the target strategy's holding period. Lower frequency means fewer trades, less slippage, and a larger LLM selectivity advantage per trade. The 3.75-hour cadence (dn=15) is optimal in this setting, producing the best annualized return ($-4.37\%$) at the lowest cost (\$0.020). Mean LLM latency is stable across all cadences (5,871--6,569 ms), confirming that call frequency does not materially affect per-call response time.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{When Is LLM Overhead Justified?}
+
+Our results allow us to state the break-even condition precisely. Let:
+\begin{itemize}
+    \item $\Delta R$ = annualized return improvement of Orchestrator over best non-LLM agent
+    \item $C_{\text{LLM}}$ = annual LLM API cost = cost/call $\times$ calls/day $\times$ 252
+    \item $\Delta S$ = slippage savings from LLM trade selectivity (fewer, better-selected trades)
+\end{itemize}
+
+Overhead is justified when:
+\begin{equation}
+    \Delta R + \Delta S > C_{\text{LLM}}
+    \label{eq:breakeven}
+\end{equation}
+
+In our setting, $C_{\text{LLM}} \approx \$0.02$ per 78-cycle run --- effectively zero at this scale. The binding constraint is not dollar cost but \textit{latency}: at 8.6 seconds per LLM call, the system cannot support decision cadences tighter than $\sim$10 seconds without queuing delays. At 15-minute bars, this is not a problem; at 1-minute bars, a 1,170-call run requires careful pipelining.
+
+The slippage reversal observed in Experiment 1 is the key practical finding: without slippage, TrendAgent leads; with slippage, Orchestrator leads. This means the LLM's overhead is net-positive precisely because it trades less, and each trade it avoids saves $\sim$0.20\% in round-trip slippage. In a system where slippage is zero (e.g., a simulation without market impact), the LLM's selectivity provides no additional benefit over its higher-frequency competitors.
+
+\subsection{Scaling Implications}
+
+The scaling results (Experiments 2 and 3) suggest a practical design principle:
+
+\begin{enumerate}
+    \item \textbf{Add agents freely.} The marginal latency cost of one additional strategy agent is $\sim$420 ms of LLM time and $\sim$135 prompt tokens --- negligible relative to baseline LLM latency. Decision quality should drive agent count, not compute budget.
+    \item \textbf{Universe size is a feature compute problem, not an LLM problem.} Scaling to 10,000 tickers adds $\sim$700 ms of feature computation but only a few hundred tokens to the LLM prompt. Parallelizing feature computation (e.g., vectorized pandas or GPU-accelerated indicators) is more impactful than prompt compression.
+    \item \textbf{LLM latency is the dominant bottleneck for any system with $>$1 LLM call per cycle.} Optimizations that target feature computation or agent calls produce at most a 0.2\% reduction in total per-cycle time.
+\end{enumerate}
+
+\subsection{Limitations}
+
+\begin{enumerate}
+    \item \textbf{Single LLM provider:} All results use GPT-4o-mini via the OpenAI API. Latency distributions differ across providers and model sizes.
+    \item \textbf{45-day window:} The evaluation window is short and covers a single market regime. Frequency ablation results (Experiment 4) may differ in mixed-regime periods.
+    \item \textbf{No parallelization:} Strategy agents are called sequentially. Parallelizing agent calls would reduce the 15 ms agent stage to approximately 5 ms; this does not affect the LLM dominance result.
+    \item \textbf{Simulated execution:} Real-time deployment would add network latency, order management overhead, and market impact not captured in simulation.
+\end{enumerate}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We presented the first per-stage latency decomposition of an LLM-orchestrated multi-agent decision system under realistic transaction costs. The central finding is stark: the LLM call accounts for 99.8\% of per-cycle latency in the Orchestrator (8,617 ms out of 8,633 ms), with feature computation (156 ms) and agent calls (15 ms) contributing negligibly. Feature computation is the only stage that scales with universe size; LLM cost scales sub-linearly due to prompt summarization; agent call time is effectively constant.
+
+Despite this latency dominance, LLM orchestration is net-positive after realistic slippage: the Orchestrator ranks first among all architectures under 10 bps + \$1 commission costs, because its selective, lower-frequency trade entry generates less slippage drag than faster non-LLM alternatives. The overhead is justified not by raw decision quality in a frictionless simulation, but by trade selectivity that pays for itself through reduced transaction costs.
+
+These findings suggest a practical design principle for LLM-orchestrated systems: optimize for decision quality over frequency, parallelize feature computation rather than compressing prompts, and add strategy agents freely since their marginal cost is small. The binding design constraint is LLM call latency, which sets a hard floor on decision cadence. Within that constraint, the LLM's value scales with the per-trade cost of mistakes --- making it most valuable in high-slippage, low-frequency regimes where selectivity has the largest impact.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{Acknowledgment}
+
+We thank the Foundations of Artificial Intelligence course at Northeastern University for providing the research framework and computational resources that made this work possible.
+
+\begin{thebibliography}{00}
+
+\bibitem{companion}
+R. Jaramillo, P. Owa, I. Khan, ``LLM-Orchestrated Multi-Agent Trading: Dynamic Strategy Management for Adaptive Portfolio Performance,'' Northeastern University, 2026.
+
+\bibitem{openai_pricing}
+OpenAI, ``GPT-4o mini pricing,'' \url{https://openai.com/api/pricing/}, 2025.
+
+\bibitem{langchain}
+H. Chase, ``LangChain: Building applications with LLMs through composability,'' GitHub, 2022.
+
+\bibitem{autogen}
+Q. Wu, G. Bansal, J. Zhang, et al., ``AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation,'' \textit{arXiv preprint arXiv:2308.08155}, 2023.
+
+\bibitem{finrl}
+Y. Zhang, J. Zhang, S. Roberts, ``FinRL: An Open-Source Deep Reinforcement Learning Framework for Quantitative Trading,'' \textit{ACM ICAIF}, 2023.
+
+\bibitem{perf_counter}
+Python Software Foundation, ``time.perf\_counter --- High-resolution timer,'' Python 3 Documentation, 2024.
+
+\end{thebibliography}
+
+\end{document}

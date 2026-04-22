@@ -1,0 +1,5 @@
+agent,nav,return_pct,ann_return,trades,expectancy,t_feature_mean,t_agent_mean,t_prompt_mean,t_llm_mean,t_parse_mean,t_total_mean,t_feature_p95,t_agent_p95,t_llm_p95,t_total_p95,prompt_tokens,completion_tokens,llm_cost_usd,llm_calls,n_agents,n_tickers
+Orchestrator (10 tickers),100058.38,0.0584,0.4904,29,3.16,11.5,11.72,0.22,5192.19,0.02,5204.16,18.09,25.44,5253.01,5265.39,689.4,101.4,0.008211,50,3,10
+Orchestrator (50 tickers),99678.86,-0.3211,-2.6975,107,-3.26,43.73,10.96,0.19,4816.2,0.02,4827.38,52.97,21.92,8725.76,8746.66,978.7,253.9,0.014957,50,3,50
+Orchestrator (100 tickers),99830.68,-0.1693,-1.4223,137,-0.41,85.65,9.52,0.44,5995.14,0.04,6005.14,98.98,23.65,10630.97,10648.18,1194.7,315.2,0.018417,50,3,100
+Orchestrator (147 tickers),99651.7,-0.3483,-2.9257,155,-1.61,124.61,12.01,0.29,5638.32,0.03,5650.66,137.28,23.86,9174.2,9180.04,1302.8,332.3,0.019741,50,3,147

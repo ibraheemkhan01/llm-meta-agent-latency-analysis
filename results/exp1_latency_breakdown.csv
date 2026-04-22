@@ -1,0 +1,7 @@
+agent,nav,return_pct,ann_return,trades,expectancy,t_feature_mean,t_agent_mean,t_feature_p95,t_agent_p95,t_llm_mean,t_llm_p95,prompt_tokens,llm_cost_usd,t_prompt_mean,t_parse_mean,t_total_mean,t_total_p95,completion_tokens,llm_calls,n_agents
+TrendAgent,99474.61,-0.5254,-4.4132,188,-2.02,136.6,1.11,181.49,1.51,0.0,0.0,0.0,0.0,,,,,,,
+MomentumAgent,99573.49,-0.4265,-3.5827,81,-4.97,207.35,1.72,290.31,2.75,0.0,0.0,0.0,0.0,,,,,,,
+MeanReversionAgent,99387.5,-0.6125,-5.145,58,-9.89,142.54,1.15,278.97,1.96,0.0,0.0,0.0,0.0,,,,,,,
+EnsembleAgent,99155.82,-0.8442,-7.0911,198,-3.48,197.69,4.77,277.97,8.81,0.0,0.0,0.0,0.0,,,,,,,
+UCBBanditAgent,99551.05,-0.449,-3.7712,119,-3.42,217.56,1.68,303.41,2.9,0.0,0.0,0.0,0.0,,,,,,,
+Orchestrator+LLM,99760.82,-0.2392,-2.0091,161,-0.88,155.55,15.33,202.81,31.51,8616.98,9199.71,1302.8,0.02009,0.35,0.04,8632.71,9217.25,344.0,50.0,3.0
